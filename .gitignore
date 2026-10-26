@@ -18,7 +18,8 @@ ENV/
 htmlcov/
 
 # Logs and runtime data
-logs/
+logs/*
+!logs/.gitkeep
 *.log
 tmp/
 data/

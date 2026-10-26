@@ -17,14 +17,17 @@ AIGateway 是一个面向多模型、多租户场景的 AI API 网关。
 
 ## 核心能力
 
-- `POST /v1/messages`：消息请求，支持流式与非流式响应。
-- `POST /v1/messages/count_tokens`：Token 数量计算。
-- `GET /v1/models`：按客户端权限返回可用模型。
-- `GET /health`：服务健康检查。
+- `POST /anthropic/v1/messages`：Anthropic Messages 协议入口。
+- `POST /chat/completions`：Chat 协议入口。
+- `POST /chat/v1/messages/count_tokens`：Chat Token 数量计算入口。
+- `POST /responses/v1/responses`：Responses 协议入口。
+- `GET /anthropic/health`、`GET /chat/health`、`GET /responses/health`：路由健康检查。
 - 客户端 API Key 鉴权与多租户隔离。
 - 服务商、模型、模型 API Key 的多级配置。
 - 基于优先级、并发容量和可用状态的模型选择。
 - 请求日志、客户端用量统计和模型用量统计。
+
+当前已建立独立的路由层，上游认证、模型匹配和请求转发将在服务层接入。
 
 ## 架构方向
 

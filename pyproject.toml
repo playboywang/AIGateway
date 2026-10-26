@@ -3,4 +3,16 @@ name = "aigateway"
 version = "0.1.0"
 description = "A multi-tenant AI API gateway."
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "fastapi>=0.162.0",
+]
+
+[dependency-groups]
+dev = [
+    "httpx2>=2.16.0",
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

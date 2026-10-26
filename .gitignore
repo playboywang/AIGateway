@@ -33,3 +33,7 @@ Thumbs.db
 build/
 dist/
 *.egg-info/
+
+# Local AI instructions
+AGENTS.md
+agent.md

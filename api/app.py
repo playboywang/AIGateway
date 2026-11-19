@@ -10,6 +10,7 @@ from db.session import dispose_engine
 from logging_config import setup_logging
 from middleware.request_context import register_request_context_middleware
 from services.redis_cache import close_redis_cache, init_redis_cache
+from services.upstream import close_http_client
 
 
 @asynccontextmanager
@@ -19,6 +20,7 @@ async def lifespan(_: FastAPI):
     await init_redis_cache(settings)
     yield
     await close_redis_cache()
+    await close_http_client()
     await dispose_engine()
 
 

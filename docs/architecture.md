@@ -121,3 +121,15 @@ Redis 未启用、连接失败或运行期出错时自动回退到 L1 和数据�
 - FastAPI 路由和请求上下文中间件注册
 - 关闭 Redis 连接
 - 释放数据库连接池
+## 上游转发
+
+- 使用共享 `httpx.AsyncClient` 复用连接。
+- 根据 `protocol_code` 选择完整上游 URL。
+- 将请求中的逻辑模型名替换为 `provider_model_name`。
+- 客户端 API Key 不会转发到上游。
+- 上游鉴权默认使用 `Authorization: Bearer`，端点可配置 `auth_style`。
+- 401/403 直接切换下一个 Key。
+- 429/5xx 和网络异常执行指数退避重试，耗尽后切换 Key。
+- 流式响应使用解码后的字节流，支持 gzip SSE。
+- Chat 流式请求自动补充 `stream_options.include_usage=true`。
+- 每次请求写入 `client_request_log`，包括状态、token、耗时和首包耗时。

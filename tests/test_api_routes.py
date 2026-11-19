@@ -1,11 +1,50 @@
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-import pytest
+from collections.abc import AsyncIterator
 
+import pytest
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from fastapi.testclient import TestClient
+
+from api.dependencies import get_gateway_service
 from api.router import router
+from db.session import get_db
+from middleware.request_context import register_request_context_middleware
+from services.auth import AuthContext, get_auth_context
+
+
+class FakeGateway:
+    async def forward(self, *, session, auth, protocol, body, request):
+        return JSONResponse(
+            status_code=200,
+            content={
+                "protocol": str(protocol),
+                "model": body.get("model"),
+                "client_id": auth.client_id,
+                "request_id": request.state.ctx.request_id,
+            },
+        )
+
+
+async def _fake_db() -> AsyncIterator[object]:
+    yield object()
+
+
+async def _fake_auth() -> AuthContext:
+    return AuthContext(
+        client_id=1,
+        client_api_key_id=1,
+        client_api_key="test-key",
+        client_name="Test",
+        is_write_log=False,
+    )
+
 
 app = FastAPI()
+register_request_context_middleware(app)
 app.include_router(router)
+app.dependency_overrides[get_db] = _fake_db
+app.dependency_overrides[get_auth_context] = _fake_auth
+app.dependency_overrides[get_gateway_service] = FakeGateway
 client = TestClient(app)
 
 
@@ -47,29 +86,42 @@ def test_health_routes_are_available() -> None:
             "chat",
         ),
         (
-            "/chat/v1/messages/count_tokens",
-            {
-                "model": "example-model",
-                "messages": [{"role": "user", "content": "hello"}],
-            },
-            "chat",
-        ),
-        (
             "/responses/v1/responses",
             {"model": "example-model", "input": "hello"},
             "responses",
         ),
     ],
 )
-def test_protocol_routes_report_unconfigured_backend(
+def test_protocol_routes_delegate_to_gateway(
     path: str,
     payload: dict[str, object],
     protocol: str,
 ) -> None:
-    response = client.post(path, json=payload)
+    response = client.post(
+        path,
+        json=payload,
+        headers={"X-Request-ID": "request-123"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "protocol": protocol,
+        "model": "example-model",
+        "client_id": 1,
+        "request_id": "request-123",
+    }
+
+
+def test_count_tokens_reports_unavailable_backend() -> None:
+    response = client.post(
+        "/chat/v1/messages/count_tokens",
+        json={
+            "model": "example-model",
+            "messages": [{"role": "user", "content": "hello"}],
+        },
+    )
 
     assert response.status_code == 503
-    assert response.json()["detail"]["protocol"] == protocol
 
 
 def test_chat_request_validation_is_applied() -> None:
@@ -86,3 +138,4 @@ def test_invalid_json_is_rejected() -> None:
     )
 
     assert response.status_code == 400
+    assert response.json()["detail"].startswith("Invalid JSON body")

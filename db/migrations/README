@@ -1,0 +1,11 @@
+# AIGateway database migrations
+
+The migration environment reads `AIGATEWAY_DATABASE_URL` through the same
+`.env`-first settings loader used by the application.
+
+```bash
+uv run alembic revision --autogenerate -m "describe change"
+uv run alembic upgrade head
+```
+
+Do not use application startup to create or alter production tables.

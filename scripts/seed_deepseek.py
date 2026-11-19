@@ -28,9 +28,13 @@ from db.session import dispose_engine, get_session_factory  # noqa: E402
 
 CLIENT_CODE = "local-dev"
 PROVIDER_CODE = "deepseek"
-ENDPOINT_URL = "https://api.deepseek.com/chat/completions"
-LOGIC_MODEL_CODE = "deepseek-chat"
-PROVIDER_MODEL_NAME = "deepseek-chat"
+ENDPOINTS = {
+    "chat": ("DeepSeek Chat Completions", "https://api.deepseek.com/chat/completions"),
+    "responses": ("DeepSeek Responses", "https://api.deepseek.com/responses"),
+    "anthropic": ("DeepSeek Anthropic Messages", "https://api.deepseek.com/anthropic/v1/messages"),
+}
+LOGIC_MODEL_CODE = "deepseek-flash"
+PROVIDER_MODEL_NAME = "deepseek-flash"
 GROUP_TYPE = "API"
 
 
@@ -124,11 +128,11 @@ async def _get_or_create_logic_model(session) -> LlmLogicModel:
         now = datetime.now()
         record = LlmLogicModel(
             logic_model_code=LOGIC_MODEL_CODE,
-            logic_model_alias="DeepSeek Chat",
+            logic_model_alias="DeepSeek Flash",
             max_context_length=128000,
             max_token=8192,
             model_type="chat",
-            description="DeepSeek chat model",
+            description="DeepSeek flash model",
             is_deleted=0,
             create_time=now,
             update_time=now,
@@ -138,25 +142,31 @@ async def _get_or_create_logic_model(session) -> LlmLogicModel:
     return record
 
 
-async def _get_or_create_endpoint(session, provider_id: int) -> LlmProviderEndpoint:
+async def _get_or_create_endpoint(
+    session,
+    provider_id: int,
+    protocol_code: str,
+    endpoint_name: str,
+    base_url: str,
+) -> LlmProviderEndpoint:
     result = await session.execute(
         select(LlmProviderEndpoint)
         .where(
             LlmProviderEndpoint.provider_id == provider_id,
-            LlmProviderEndpoint.protocol_code == "chat",
+            LlmProviderEndpoint.protocol_code == protocol_code,
             LlmProviderEndpoint.group_type == GROUP_TYPE,
         )
         .limit(1)
     )
     record = result.scalar_one_or_none()
+    now = datetime.now()
     if record is None:
-        now = datetime.now()
         record = LlmProviderEndpoint(
             provider_id=provider_id,
-            endpoint_name="DeepSeek Chat",
-            protocol_code="chat",
+            endpoint_name=endpoint_name,
+            protocol_code=protocol_code,
             group_type=GROUP_TYPE,
-            base_url=ENDPOINT_URL,
+            base_url=base_url,
             timeout=600,
             extra_config=json.dumps({}, ensure_ascii=False),
             status=1,
@@ -167,10 +177,11 @@ async def _get_or_create_endpoint(session, provider_id: int) -> LlmProviderEndpo
         session.add(record)
         await session.flush()
     else:
-        record.base_url = ENDPOINT_URL
+        record.endpoint_name = endpoint_name
+        record.base_url = base_url
         record.status = 1
         record.is_deleted = 0
-        record.update_time = datetime.now()
+        record.update_time = now
     return record
 
 
@@ -257,7 +268,15 @@ async def main() -> None:
         client = await _get_or_create_client(session)
         client_key, client_key_created = await _get_or_create_client_key(session, client.id)
         provider = await _get_or_create_provider(session)
-        endpoint = await _get_or_create_endpoint(session, provider.id)
+        endpoints = {}
+        for protocol_code, (endpoint_name, base_url) in ENDPOINTS.items():
+            endpoints[protocol_code] = await _get_or_create_endpoint(
+                session,
+                provider.id,
+                protocol_code,
+                endpoint_name,
+                base_url,
+            )
         logic_model = await _get_or_create_logic_model(session)
         provider_model = await _get_or_create_provider_model(
             session, provider.id, logic_model.id
@@ -270,7 +289,9 @@ async def main() -> None:
         print(f"client_api_key_created={client_key_created}")
         print(f"client_api_key={client_key.api_key}")
         print(f"provider_id={provider.id}")
-        print(f"endpoint_id={endpoint.id}")
+        for protocol_code, endpoint in endpoints.items():
+            print(f"endpoint_{protocol_code}_id={endpoint.id}")
+            print(f"endpoint_{protocol_code}_url={endpoint.base_url}")
         print(f"logic_model_id={logic_model.id}")
         print(f"provider_model_id={provider_model.id}")
         print(f"provider_key_id={key.id}")

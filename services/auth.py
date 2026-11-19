@@ -1,6 +1,6 @@
 """API key authentication for model proxy routes."""
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Annotated
 
@@ -8,8 +8,10 @@ from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from config import get_settings
 from db.models import Client, ClientApiKey
 from db.session import get_db
+from services import redis_cache, request_cache
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,11 +89,52 @@ async def get_auth_context(
     api_key: Annotated[str | None, Depends(get_api_key)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> AuthContext:
+    if not api_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing API key",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    settings = get_settings()
+    cached = request_cache.get_cached_auth_context(api_key)
+    if cached is not None:
+        try:
+            return AuthContext(**cached)
+        except TypeError:
+            request_cache.delete_cached_auth_context(api_key)
+
+    shared_cached = await redis_cache.get_cached_auth_context(api_key)
+    if shared_cached is not None:
+        try:
+            context = AuthContext(**shared_cached)
+        except TypeError:
+            await redis_cache.delete_cached_auth_context(api_key)
+        else:
+            request_cache.set_cached_auth_context(
+                api_key,
+                asdict(context),
+                settings.auth_l1_cache_ttl_seconds,
+            )
+            return context
+
     try:
-        return await authenticate_api_key(db, api_key)
+        context = await authenticate_api_key(db, api_key)
     except AuthenticationError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=str(exc),
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
+
+    request_cache.set_cached_auth_context(
+        api_key,
+        asdict(context),
+        settings.auth_l1_cache_ttl_seconds,
+    )
+    await redis_cache.set_cached_auth_context(
+        api_key,
+        asdict(context),
+        settings.auth_cache_ttl_seconds,
+    )
+    return context

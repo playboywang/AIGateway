@@ -76,3 +76,48 @@ uv run alembic upgrade head
 ```
 
 应用启动不负责自动建表或修改生产表结构。
+
+## 运行时基础设施
+
+### 请求上下文
+
+`middleware/request_context.py` 负责：
+
+- 生成或透传 request_id
+- 记录请求开始时间
+- 缓存原始 JSON body 并向下游重放
+- 提取 API Key、客户端 IP、User-Agent 和 trace 头
+- 拒绝无效 JSON
+- 可选拦截禁用模型
+- 在响应头返回 request_id
+
+默认请求 ID 头为 `X-Request-ID`，可通过
+`AIGATEWAY_REQUEST_ID_HEADER` 修改。
+
+### 缓存
+
+鉴权缓存采用两级结构：
+
+1. 进程内 L1 缓存，默认 300 秒。
+2. 可选 Redis L2 缓存，默认 3600 秒。
+
+Redis 未启用、连接失败或运行期出错时自动回退到 L1 和数据库，不阻断请求。
+缓存键使用 API Key 的 SHA-256 摘要，不在缓存键中保存明文。
+
+### 日志与计时
+
+- 主日志同时输出到控制台和 `logs/aigateway.log`。
+- 日志自动注入 request_id。
+- 文件日志按天滚动，保留 14 个历史文件。
+- `AIGATEWAY_TIME_TRACKING_ENABLED=true` 时可将请求阶段耗时写入
+  `logs/time/`。
+
+### 应用生命周期
+
+`api/app.py` 统一完成：
+
+- 日志初始化
+- Redis 初始化
+- FastAPI 路由和请求上下文中间件注册
+- 关闭 Redis 连接
+- 释放数据库连接池

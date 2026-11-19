@@ -41,6 +41,18 @@ class Settings:
     key_candidate_limit: int
     default_group_type: str
     request_id_header: str
+    model_disable_enabled: bool
+    model_disable_list: tuple[str, ...]
+    time_tracking_enabled: bool
+    redis_enabled: bool
+    redis_host: str
+    redis_port: int
+    redis_db: int
+    redis_password: str | None
+    redis_default_ttl_seconds: int
+    redis_socket_timeout_seconds: float
+    auth_l1_cache_ttl_seconds: int
+    auth_cache_ttl_seconds: int
 
 
 def _as_bool(value: Any) -> bool:
@@ -75,6 +87,20 @@ def _as_str(value: Any) -> str:
 def _as_path(value: Any) -> Path:
     path = Path(str(value).strip())
     return path if path.is_absolute() else PROJECT_ROOT / path
+
+
+def _as_model_disable_list(value: Any) -> tuple[str, ...]:
+    raw = str(value or "").strip()
+    if not raw:
+        return ()
+    if raw.startswith("[") and raw.endswith("]"):
+        try:
+            parsed = __import__("json").loads(raw)
+        except (TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, list):
+            return tuple(str(item).strip() for item in parsed if str(item).strip())
+    return tuple(item.strip() for item in raw.split(",") if item.strip())
 
 
 def _read(
@@ -179,6 +205,68 @@ def load_settings(env_path: Path | str | None = None) -> Settings:
             "AIGATEWAY_REQUEST_ID_HEADER",
             defaults.REQUEST_ID_HEADER,
             _as_str,
+        ),
+        model_disable_enabled=_read(
+            env_values,
+            "AIGATEWAY_MODEL_DISABLE_ENABLED",
+            defaults.MODEL_DISABLE_ENABLED,
+            _as_bool,
+        ),
+        model_disable_list=_read(
+            env_values,
+            "AIGATEWAY_MODEL_DISABLE_LIST",
+            defaults.MODEL_DISABLE_LIST,
+            _as_model_disable_list,
+        ),
+        time_tracking_enabled=_read(
+            env_values,
+            "AIGATEWAY_TIME_TRACKING_ENABLED",
+            defaults.TIME_TRACKING_ENABLED,
+            _as_bool,
+        ),
+        redis_enabled=_read(
+            env_values,
+            "AIGATEWAY_REDIS_ENABLED",
+            defaults.REDIS_ENABLED,
+            _as_bool,
+        ),
+        redis_host=_read(
+            env_values, "AIGATEWAY_REDIS_HOST", defaults.REDIS_HOST, _as_str
+        ),
+        redis_port=_read(
+            env_values, "AIGATEWAY_REDIS_PORT", defaults.REDIS_PORT, _as_int
+        ),
+        redis_db=_read(env_values, "AIGATEWAY_REDIS_DB", defaults.REDIS_DB, _as_int),
+        redis_password=_read(
+            env_values,
+            "AIGATEWAY_REDIS_PASSWORD",
+            defaults.REDIS_PASSWORD,
+            _as_str,
+        )
+        or None,
+        redis_default_ttl_seconds=_read(
+            env_values,
+            "AIGATEWAY_REDIS_DEFAULT_TTL_SECONDS",
+            defaults.REDIS_DEFAULT_TTL_SECONDS,
+            _as_int,
+        ),
+        redis_socket_timeout_seconds=_read(
+            env_values,
+            "AIGATEWAY_REDIS_SOCKET_TIMEOUT_SECONDS",
+            defaults.REDIS_SOCKET_TIMEOUT_SECONDS,
+            _as_float,
+        ),
+        auth_l1_cache_ttl_seconds=_read(
+            env_values,
+            "AIGATEWAY_AUTH_L1_CACHE_TTL_SECONDS",
+            defaults.AUTH_L1_CACHE_TTL_SECONDS,
+            _as_int,
+        ),
+        auth_cache_ttl_seconds=_read(
+            env_values,
+            "AIGATEWAY_AUTH_CACHE_TTL_SECONDS",
+            defaults.AUTH_CACHE_TTL_SECONDS,
+            _as_int,
         ),
     )
 

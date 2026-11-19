@@ -119,7 +119,7 @@ uv run main.py
 
 ## 技术栈
 
-服务端采用 Python 3.11+，使用 FastAPI、SQLAlchemy 异步会话和 MySQL。项目使用 uv 管理解释器版本、虚拟环境、依赖和锁文件；配置以 `.env` 键存在优先、`config/defaults.py` 兜底。
+服务端采用 Python 3.11+，使用 FastAPI、SQLAlchemy 异步会话、MySQL 和可选 Redis。项目使用 uv 管理解释器版本、虚拟环境、依赖和锁文件；配置以 `.env` 键存在优先、`config/defaults.py` 兜底。
 
 ## 仓库
 

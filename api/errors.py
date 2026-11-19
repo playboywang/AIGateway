@@ -13,3 +13,15 @@ def gateway_unavailable(protocol: str) -> HTTPException:
             "protocol": protocol,
         },
     )
+
+def gateway_capability_unavailable(protocol: str, capability: str) -> HTTPException:
+    """Return 501 when the selected provider protocol lacks a capability."""
+    return HTTPException(
+        status_code=501,
+        detail={
+            "code": "gateway_capability_unavailable",
+            "message": f"{capability} is not available for {protocol}",
+            "protocol": protocol,
+            "capability": capability,
+        },
+    )

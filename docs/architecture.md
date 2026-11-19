@@ -121,6 +121,7 @@ Redis 未启用、连接失败或运行期出错时自动回退到 L1 和数据�
 - FastAPI 路由和请求上下文中间件注册
 - 关闭 Redis 连接
 - 释放数据库连接池
+
 ## 上游转发
 
 - 使用共享 `httpx.AsyncClient` 复用连接。
@@ -133,3 +134,25 @@ Redis 未启用、连接失败或运行期出错时自动回退到 L1 和数据�
 - 流式响应使用解码后的字节流，支持 gzip SSE。
 - Chat 流式请求自动补充 `stream_options.include_usage=true`。
 - 每次请求写入 `client_request_log`，包括状态、token、耗时和首包耗时。
+## 协议与业务接口
+
+- `POST /anthropic/v1/messages`
+- `POST /chat/completions`
+- `POST /responses/v1/responses`
+- `POST /embeddings/v1/embeddings`
+- `GET /anthropic/v1/models`
+- `GET /chat/v1/models`
+- `GET /responses/v1/models`
+- `GET /embeddings/v1/models`
+- `GET /usage/summary`
+- `GET /usage/requests`
+
+`count_tokens` 仅在服务商提供对应能力时可用；当前 DeepSeek 配置返回 501。
+
+## Key 运行时
+
+- 请求开始前原子占用 `llm_provider_key.current_requests`。
+- 请求结束、失败或客户端断流时释放。
+- 认证失败或重试耗尽增加 `fail_count`。
+- 成功请求清零 `fail_count`。
+- 选择候选 Key 时优先使用并发占用更低的 Key。

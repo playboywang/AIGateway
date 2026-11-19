@@ -5,11 +5,16 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
-from api.dependencies import get_gateway_service
+from api.dependencies import get_gateway_service, get_model_catalog_service
 from api.router import router
 from db.session import get_db
 from middleware.request_context import register_request_context_middleware
 from services.auth import AuthContext, get_auth_context
+
+
+class FakeCatalog:
+    async def list_models(self, protocol_code: str):
+        return []
 
 
 class FakeGateway:
@@ -45,6 +50,7 @@ app.include_router(router)
 app.dependency_overrides[get_db] = _fake_db
 app.dependency_overrides[get_auth_context] = _fake_auth
 app.dependency_overrides[get_gateway_service] = FakeGateway
+app.dependency_overrides[get_model_catalog_service] = FakeCatalog
 client = TestClient(app)
 
 
@@ -121,7 +127,7 @@ def test_count_tokens_reports_unavailable_backend() -> None:
         },
     )
 
-    assert response.status_code == 503
+    assert response.status_code == 501
 
 
 def test_chat_request_validation_is_applied() -> None:

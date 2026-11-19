@@ -4,10 +4,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.dependencies import get_gateway_service
+from api.dependencies import get_gateway_service, get_model_catalog_service
 from db.session import get_db
 from services.auth import AuthContext, get_auth_context
 from services.gateway import GatewayService
+from services.model_catalog import ModelCatalogService, present_model_list
 from services.model_matcher import ProtocolCode
 
 router = APIRouter(prefix="/anthropic", tags=["Anthropic"])
@@ -43,6 +44,15 @@ async def create_message(
         body=body,
         request=request,
     )
+
+
+@router.get("/v1/models")
+async def list_models(
+    auth: AuthContext = Depends(get_auth_context),
+    catalog: ModelCatalogService = Depends(get_model_catalog_service),
+) -> dict[str, object]:
+    """List models available for the Anthropic protocol."""
+    return present_model_list(await catalog.list_models(str(PROTOCOL_CODE)))
 
 
 @router.get("/health")

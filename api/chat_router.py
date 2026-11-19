@@ -6,12 +6,13 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.dependencies import get_gateway_service
-from api.errors import gateway_unavailable
+from api.dependencies import get_gateway_service, get_model_catalog_service
+from api.errors import gateway_capability_unavailable
 from api.schemas import ChatMessagesRequest, ChatTokenCountRequest
 from db.session import get_db
 from services.auth import AuthContext, get_auth_context
 from services.gateway import GatewayService
+from services.model_catalog import ModelCatalogService, present_model_list
 from services.model_matcher import ProtocolCode
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
@@ -38,9 +39,21 @@ async def create_message(
 
 
 @router.post("/v1/messages/count_tokens")
-async def count_tokens(body: ChatTokenCountRequest) -> None:
+async def count_tokens(
+    body: ChatTokenCountRequest,
+    auth: AuthContext = Depends(get_auth_context),
+) -> None:
     """Token counting is not available for every provider."""
-    raise gateway_unavailable(str(PROTOCOL_CODE))
+    raise gateway_capability_unavailable(str(PROTOCOL_CODE), "count_tokens")
+
+
+@router.get("/v1/models")
+async def list_models(
+    auth: AuthContext = Depends(get_auth_context),
+    catalog: ModelCatalogService = Depends(get_model_catalog_service),
+) -> dict[str, object]:
+    """List models available for Chat Completions."""
+    return present_model_list(await catalog.list_models(str(PROTOCOL_CODE)))
 
 
 @router.get("/health")

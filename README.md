@@ -4,7 +4,7 @@ AIGateway 是一个面向多模型、多租户场景的 AI API 网关。
 
 项目围绕稳定的 API 契约、清晰的架构边界、可靠的模型调度和完整的运行观测进行设计，为不同客户端提供统一的模型接入与治理能力。
 
-> **当前状态：项目初始化阶段。** 仓库暂未包含可运行业务代码，后续实现将围绕明确的接口契约、数据模型和自动化测试逐项展开。
+> **当前状态：核心模型网关已可运行。** 已支持三种协议真实转发、流式 SSE、模型匹配、Key 调度和请求日志。
 
 ## 当前范围
 
@@ -29,16 +29,18 @@ AIGateway 是一个面向多模型、多租户场景的 AI API 网关。
 ## 核心能力
 
 - `POST /anthropic/v1/messages`：Anthropic Messages 协议入口。
-- `POST /chat/completions`：Chat 协议入口。
-- `POST /chat/v1/messages/count_tokens`：Chat Token 数量计算入口。
+- `POST /chat/completions`：Chat Completions 协议入口。
 - `POST /responses/v1/responses`：Responses 协议入口。
-- `GET /anthropic/health`、`GET /chat/health`、`GET /responses/health`：路由健康检查。
-- 客户端 API Key 鉴权与多租户隔离。
+- `POST /embeddings/v1/embeddings`：Embeddings 协议入口。
+- `GET /{protocol}/v1/models`：按协议查询可用模型。
+- `POST /chat/v1/messages/count_tokens`：当前返回 501，等待支持该能力的上游端点。
+- `GET /usage/summary`、`GET /usage/requests`：查询当前客户端的用量和最近请求。
+- 客户端 API Key 鉴权、多租户隔离和两级缓存。
 - 服务商、模型、模型 API Key 的多级配置。
-- 基于优先级、并发容量和可用状态的模型选择。
-- 请求日志、客户端用量统计和模型用量统计。
+- 基于并发容量、更新时间和可用状态的模型选择。
+- 重试、换 Key、流式 SSE 和 `client_request_log` 记录。
 
-当前已完成独立路由层、配置加载、异步数据库、API Key 鉴权、`llm_*` 模型匹配、协议转发和 CRL 日志。
+当前已完成独立路由层、配置加载、异步数据库、API Key 鉴权、`llm_*` 模型匹配、四种协议转发、Key 并发计数、模型目录和用量查询。
 
 ## 架构方向
 

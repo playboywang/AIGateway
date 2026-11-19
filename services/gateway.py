@@ -21,6 +21,7 @@ from services.model_matcher import (
     ModelMatcher,
     ProtocolCode,
 )
+from services.key_runtime import KeyRuntime, NoopKeyRuntime
 from services.request_log import write_client_request_log
 from services.upstream import get_http_client
 from services.usage import StreamUsageTracker, TokenUsage, extract_usage
@@ -38,10 +39,12 @@ class GatewayService:
         http_client: httpx.AsyncClient | None = None,
         matcher_factory: Callable[[AsyncSession], ModelMatcher] = ModelMatcher,
         usage_logger: Callable[..., Awaitable[None]] = write_client_request_log,
+        key_runtime: KeyRuntime | NoopKeyRuntime | None = None,
     ) -> None:
         self.http_client = http_client
         self.matcher_factory = matcher_factory
         self.usage_logger = usage_logger
+        self.key_runtime = key_runtime or KeyRuntime()
 
     @property
     def client(self) -> httpx.AsyncClient:
@@ -121,71 +124,89 @@ class GatewayService:
         settings = get_settings()
         last_response: httpx.Response | None = None
         last_error: str | None = None
+        last_key_id: int | None = None
         used_fallback = False
 
         for candidate_index, candidate in enumerate(match.candidates):
             used_fallback = used_fallback or candidate_index > 0
+            if not await self.key_runtime.acquire(candidate.key_id):
+                continue
+            last_key_id = candidate.key_id
             forward_body = dict(body)
             forward_body["model"] = match.provider_model_name
             forward_body["stream"] = False
             headers = self._build_headers(match, candidate.api_key, request)
 
-            for attempt in range(1, settings.upstream_max_attempts + 1):
-                try:
-                    response = await self.client.post(
-                        match.base_url,
-                        headers=headers,
-                        json=forward_body,
-                        timeout=httpx.Timeout(
-                            match.timeout_seconds,
-                            connect=settings.upstream_connect_timeout_seconds,
-                        ),
-                    )
-                    last_response = response
-                except httpx.HTTPError as exc:
-                    last_error = f"{type(exc).__name__}: {exc}"
-                    if attempt < settings.upstream_max_attempts:
-                        await self._backoff(attempt, settings.upstream_retry_base_delay_seconds)
+            try:
+                for attempt in range(1, settings.upstream_max_attempts + 1):
+                    try:
+                        response = await self.client.post(
+                            match.base_url,
+                            headers=headers,
+                            json=forward_body,
+                            timeout=httpx.Timeout(
+                                match.timeout_seconds,
+                                connect=settings.upstream_connect_timeout_seconds,
+                            ),
+                        )
+                        last_response = response
+                    except httpx.HTTPError as exc:
+                        last_error = f"{type(exc).__name__}: {exc}"
+                        if attempt < settings.upstream_max_attempts:
+                            await self._backoff(
+                                attempt,
+                                settings.upstream_retry_base_delay_seconds,
+                            )
+                            continue
+                        await self.key_runtime.failed(candidate.key_id)
+                        break
+
+                    if response.status_code in AUTH_FAILURE_STATUS:
+                        last_error = self._error_text(response)
+                        await self.key_runtime.failed(candidate.key_id)
+                        break
+                    if (
+                        response.status_code in RETRYABLE_STATUS
+                        and attempt < settings.upstream_max_attempts
+                    ):
+                        last_error = self._error_text(response)
+                        await self._backoff(
+                            attempt,
+                            settings.upstream_retry_base_delay_seconds,
+                        )
                         continue
-                    break
+                    if response.status_code in RETRYABLE_STATUS:
+                        last_error = self._error_text(response)
+                        await self.key_runtime.failed(candidate.key_id)
+                        break
 
-                if response.status_code in AUTH_FAILURE_STATUS:
-                    last_error = self._error_text(response)
-                    break
-                if (
-                    response.status_code in RETRYABLE_STATUS
-                    and attempt < settings.upstream_max_attempts
-                ):
-                    last_error = self._error_text(response)
-                    await self._backoff(attempt, settings.upstream_retry_base_delay_seconds)
-                    continue
-                if response.status_code in RETRYABLE_STATUS:
-                    last_error = self._error_text(response)
-                    break
-
-                usage = self._response_usage(response)
-                await self._log(
-                    auth=auth,
-                    protocol=protocol,
-                    request_id=request.state.ctx.request_id,
-                    request_model=request_model,
-                    request_started_at=request_started_at,
-                    status_code=response.status_code,
-                    usage=usage,
-                    match=match,
-                    selected_key_id=candidate.key_id,
-                    error_message=self._error_text(response)
-                    if response.status_code >= 400
-                    else None,
-                    client_ip=request.state.ctx.client_ip,
-                    user_agent=request.state.ctx.user_agent,
-                    fallback_flag=used_fallback,
-                )
-                return Response(
-                    content=response.content,
-                    status_code=response.status_code,
-                    headers=self._response_headers(response),
-                )
+                    if response.status_code < 400:
+                        await self.key_runtime.succeeded(candidate.key_id)
+                    usage = self._response_usage(response)
+                    await self._log(
+                        auth=auth,
+                        protocol=protocol,
+                        request_id=request.state.ctx.request_id,
+                        request_model=request_model,
+                        request_started_at=request_started_at,
+                        status_code=response.status_code,
+                        usage=usage,
+                        match=match,
+                        selected_key_id=candidate.key_id,
+                        error_message=self._error_text(response)
+                        if response.status_code >= 400
+                        else None,
+                        client_ip=request.state.ctx.client_ip,
+                        user_agent=request.state.ctx.user_agent,
+                        fallback_flag=used_fallback,
+                    )
+                    return Response(
+                        content=response.content,
+                        status_code=response.status_code,
+                        headers=self._response_headers(response),
+                    )
+            finally:
+                await self.key_runtime.release(candidate.key_id)
 
         status_code = last_response.status_code if last_response is not None else 502
         content = (
@@ -207,7 +228,7 @@ class GatewayService:
             status_code=status_code,
             usage=TokenUsage(),
             match=match,
-            selected_key_id=match.candidates[-1].key_id if match.candidates else None,
+            selected_key_id=last_key_id,
             error_message=last_error or "All upstream attempts failed",
             client_ip=request.state.ctx.client_ip,
             user_agent=request.state.ctx.user_agent,
@@ -218,7 +239,6 @@ class GatewayService:
             status_code=status_code,
             headers=headers,
         )
-
     async def _forward_stream(
         self,
         *,
@@ -233,10 +253,14 @@ class GatewayService:
         settings = get_settings()
         last_response: httpx.Response | None = None
         last_error: str | None = None
+        last_key_id: int | None = None
         used_fallback = False
 
         for candidate_index, candidate in enumerate(match.candidates):
             used_fallback = used_fallback or candidate_index > 0
+            if not await self.key_runtime.acquire(candidate.key_id):
+                continue
+            last_key_id = candidate.key_id
             forward_body = dict(body)
             forward_body["model"] = match.provider_model_name
             forward_body["stream"] = True
@@ -246,89 +270,136 @@ class GatewayService:
             ):
                 forward_body["stream_options"] = {"include_usage": True}
             headers = self._build_headers(match, candidate.api_key, request)
+            release_after_return = False
 
-            for attempt in range(1, settings.upstream_max_attempts + 1):
-                upstream_request = self.client.build_request(
-                    "POST",
-                    match.base_url,
-                    headers=headers,
-                    json=forward_body,
-                    timeout=httpx.Timeout(
-                        match.timeout_seconds,
-                        connect=settings.upstream_connect_timeout_seconds,
-                    ),
-                )
-                try:
-                    response = await self.client.send(upstream_request, stream=True)
-                    last_response = response
-                except httpx.HTTPError as exc:
-                    last_error = f"{type(exc).__name__}: {exc}"
-                    if attempt < settings.upstream_max_attempts:
-                        await self._backoff(attempt, settings.upstream_retry_base_delay_seconds)
-                        continue
-                    break
-
-                if response.status_code in AUTH_FAILURE_STATUS:
-                    last_error = (await response.aread()).decode("utf-8", errors="ignore")
-                    await response.aclose()
-                    break
-                if response.status_code in RETRYABLE_STATUS:
-                    last_error = (await response.aread()).decode("utf-8", errors="ignore")
-                    await response.aclose()
-                    if attempt < settings.upstream_max_attempts:
-                        await self._backoff(attempt, settings.upstream_retry_base_delay_seconds)
-                        continue
-                    break
-
-                tracker = StreamUsageTracker()
-                selected_key_id = candidate.key_id
-                request_id = request.state.ctx.request_id
-                client_ip = request.state.ctx.client_ip
-                user_agent = request.state.ctx.user_agent
-                fallback_flag = used_fallback
-                status_code = response.status_code
-
-                async def body_iterator() -> AsyncIterator[bytes]:
-                    stream_error: str | None = None
+            try:
+                for attempt in range(1, settings.upstream_max_attempts + 1):
+                    upstream_request = self.client.build_request(
+                        "POST",
+                        match.base_url,
+                        headers=headers,
+                        json=forward_body,
+                        timeout=httpx.Timeout(
+                            match.timeout_seconds,
+                            connect=settings.upstream_connect_timeout_seconds,
+                        ),
+                    )
                     try:
-                        async for chunk in response.aiter_bytes():
-                            if chunk:
-                                tracker.feed(chunk)
-                                if tracker.first_token_at is None:
-                                    tracker.first_token_at = datetime.now()
-                                yield chunk
-                    except Exception as exc:
-                        stream_error = f"{type(exc).__name__}: {exc}"
-                        logger.warning("Upstream stream interrupted: %s", stream_error)
-                    finally:
-                        tracker.finish()
+                        response = await self.client.send(
+                            upstream_request, stream=True
+                        )
+                        last_response = response
+                    except httpx.HTTPError as exc:
+                        last_error = f"{type(exc).__name__}: {exc}"
+                        if attempt < settings.upstream_max_attempts:
+                            await self._backoff(
+                                attempt,
+                                settings.upstream_retry_base_delay_seconds,
+                            )
+                            continue
+                        await self.key_runtime.failed(candidate.key_id)
+                        break
+
+                    if response.status_code >= 400:
+                        last_error = (
+                            await response.aread()
+                        ).decode("utf-8", errors="ignore")
                         await response.aclose()
+                        if response.status_code in AUTH_FAILURE_STATUS:
+                            await self.key_runtime.failed(candidate.key_id)
+                            break
+                        if (
+                            response.status_code in RETRYABLE_STATUS
+                            and attempt < settings.upstream_max_attempts
+                        ):
+                            await self._backoff(
+                                attempt,
+                                settings.upstream_retry_base_delay_seconds,
+                            )
+                            continue
+                        if response.status_code in RETRYABLE_STATUS:
+                            await self.key_runtime.failed(candidate.key_id)
                         await self._log(
                             auth=auth,
                             protocol=protocol,
-                            request_id=request_id,
+                            request_id=request.state.ctx.request_id,
                             request_model=request_model,
                             request_started_at=request_started_at,
-                            status_code=status_code if stream_error is None else 502,
-                            usage=tracker.usage,
+                            status_code=response.status_code,
+                            usage=TokenUsage(),
                             match=match,
-                            selected_key_id=selected_key_id,
-                            error_message=stream_error,
-                            client_ip=client_ip,
-                            user_agent=user_agent,
-                            fallback_flag=fallback_flag,
-                            first_token_at=tracker.first_token_at,
+                            selected_key_id=candidate.key_id,
+                            error_message=last_error,
+                            client_ip=request.state.ctx.client_ip,
+                            user_agent=request.state.ctx.user_agent,
+                            fallback_flag=used_fallback,
+                        )
+                        return JSONResponse(
+                            status_code=response.status_code,
+                            content={
+                                "detail": last_error,
+                                "request_id": request.state.ctx.request_id,
+                            },
                         )
 
-                return StreamingResponse(
-                    body_iterator(),
-                    status_code=status_code,
-                    headers=self._stream_response_headers(response),
-                )
+                    await self.key_runtime.succeeded(candidate.key_id)
+                    tracker = StreamUsageTracker()
+                    selected_key_id = candidate.key_id
+                    request_id = request.state.ctx.request_id
+                    client_ip = request.state.ctx.client_ip
+                    user_agent = request.state.ctx.user_agent
+                    fallback_flag = used_fallback
+                    status_code = response.status_code
+                    release_after_return = True
+
+                    async def body_iterator() -> AsyncIterator[bytes]:
+                        stream_error: str | None = None
+                        try:
+                            async for chunk in response.aiter_bytes():
+                                if chunk:
+                                    tracker.feed(chunk)
+                                    if tracker.first_token_at is None:
+                                        tracker.first_token_at = datetime.now()
+                                    yield chunk
+                        except Exception as exc:
+                            stream_error = f"{type(exc).__name__}: {exc}"
+                            logger.warning(
+                                "Upstream stream interrupted: %s", stream_error
+                            )
+                            await self.key_runtime.failed(selected_key_id)
+                        finally:
+                            tracker.finish()
+                            await response.aclose()
+                            await self.key_runtime.release(selected_key_id)
+                            await self._log(
+                                auth=auth,
+                                protocol=protocol,
+                                request_id=request_id,
+                                request_model=request_model,
+                                request_started_at=request_started_at,
+                                status_code=status_code
+                                if stream_error is None
+                                else 502,
+                                usage=tracker.usage,
+                                match=match,
+                                selected_key_id=selected_key_id,
+                                error_message=stream_error,
+                                client_ip=client_ip,
+                                user_agent=user_agent,
+                                fallback_flag=fallback_flag,
+                                first_token_at=tracker.first_token_at,
+                            )
+
+                    return StreamingResponse(
+                        body_iterator(),
+                        status_code=status_code,
+                        headers=self._stream_response_headers(response),
+                    )
+            finally:
+                if not release_after_return:
+                    await self.key_runtime.release(candidate.key_id)
 
         status_code = last_response.status_code if last_response is not None else 502
-        if last_response is not None:
-            await last_response.aclose()
         await self._log(
             auth=auth,
             protocol=protocol,
@@ -338,7 +409,7 @@ class GatewayService:
             status_code=status_code,
             usage=TokenUsage(),
             match=match,
-            selected_key_id=match.candidates[-1].key_id if match.candidates else None,
+            selected_key_id=last_key_id,
             error_message=last_error or "All upstream stream attempts failed",
             client_ip=request.state.ctx.client_ip,
             user_agent=request.state.ctx.user_agent,
@@ -351,7 +422,6 @@ class GatewayService:
                 "request_id": request.state.ctx.request_id,
             },
         )
-
     def _build_headers(
         self,
         match: ModelMatch,

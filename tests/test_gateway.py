@@ -8,6 +8,7 @@ from starlette.requests import Request
 
 from services.auth import AuthContext
 from services.gateway import GatewayService
+from services.key_runtime import NoopKeyRuntime
 from services.model_matcher import KeyCandidate, ModelMatch, ProtocolCode
 
 
@@ -103,6 +104,7 @@ async def test_gateway_retries_with_next_key_and_rewrites_model(monkeypatch):
             http_client=http_client,
             matcher_factory=lambda _: FakeMatcher(match),
             usage_logger=fake_logger,
+            key_runtime=NoopKeyRuntime(),
         )
         response = await service.forward(
             session=object(),
